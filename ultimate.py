@@ -3,7 +3,7 @@
 # representing state of board as two boards: one big 9x9 board for all the x's and o's (' ' for empty), and 'mini' for the 3x3 large board, who's won what (0, 1 = 'x', 2 = 'o', 3 = 'c').
 # board is a 2d 9x9 array, mini is a 1d 1x9 array
 
-# TODO: fix a/b pruning line 344... issues also being caused because we can reach a game-end state halfway through midgame minimax. need to deal with this
+# TODO: fix calls to midgame and endgame minimax in one player loop
 # TODO: DO CACHING it'll help so much bc when squares are filled it won't have to check the position twice
 # TODO: add midgame alpha-beta and a position heuristic (e.g. how many squares you've won minus how many squares the opponent has won, and how many you're about to win, not directing to a full sq, etc)
 # TODO: check Othello later steps to see if can include caching w globals, symmetry, etc.
@@ -268,7 +268,7 @@ def board_evaluation(board, mini, prev_move, ai_player, options):
 def mmx_ab(board, mini, prev_move, cur_player, lowerBound = -9, upperBound = 9):
 	# get negamax + alpha/beta pruning next move given a previous move and the board and mini states
 	# cur_player = 1 if x and 2 if o
-	# return [score, ... moves in row-col format in reverse order]
+	# Returns a tuple (score, move_sequence), where move_sequence is a list (in reverse order) of moves each in row-col format.
 	next_player = 3 - cur_player
 	myOptions = find_moves(board, mini, prev_move)
 	
@@ -276,84 +276,106 @@ def mmx_ab(board, mini, prev_move, cur_player, lowerBound = -9, upperBound = 9):
 	game_over = check_won(mini)
 	if game_over: # i.e. game_over != 0
 		if game_over != cur_player:
-			return [-10] # we lost
+			return (-10, [])  # we lost
 		elif game_over == 3:
-			return [-5] # we drew
+			return (-5, [])   # we drew
 		else:
-			return [10] # we won
+			return (10, [])   # we won
 	
-	# negamax recursion
-	bestSoFar = [lowerBound - 2]
+	# Set initial best score and move sequence.
+	bestScore = lowerBound - 2
+	bestMoves = []  # Will store the best move sequence (in reverse order)
+
 	if not myOptions:
 		disp(board)
 		disp_mini(mini)
 		print(f"no options for player {'xo'[cur_player - 1]} in above position")
 		exit()
+	
 	for mv in myOptions:
 		new_board = make_board_move(board, mv, cur_player)
 		new_mini = make_mini_move(mini, new_board)
-		ab = mmx_ab(new_board, new_mini, mv, next_player, -upperBound, -lowerBound)
-		score = -ab[0]
+		childScore, childMoves = mmx_ab(new_board, new_mini, mv, next_player, -upperBound, -lowerBound)
+		score = -childScore # Negamax: invert child score
 
 		if score < lowerBound: continue
-		if score > upperBound: return [score] + ab[1:] + [mv] # maybe??
-		if score > bestSoFar[0]:
-			bestSoFar = [score] + ab[1:] + [mv] # compile moves in reverse order, 0th element is min score
+		if score > upperBound: # If we exceed the upper bound, do an immediate cutoff with the complete move sequence.
+			return (score, [mv] if childMoves == [] else childMoves + [mv])
+			# return (score, childMoves + [mv])
+		if score > bestScore: # Update the best score and corresponding move sequence if we found a better option.
+			bestScore = score
+			bestMoves = childMoves + [mv]
 
-		lowerBound = score + 1
-	
-	if len(bestSoFar) > 1 and bestSoFar[-1] not in myOptions: # shouldn't trigger?
-		print('you played a prev played move')
-		print(f'{bestSoFar} {board} {mini} {cur_player} options: {myOptions}')
+		lowerBound = max(lowerBound, score)
+
+	if bestMoves and bestMoves[-1] not in myOptions:
+		print(f"Invalid move detected: {bestMoves[-1]} not in {myOptions}")
 		exit()
 
-	return bestSoFar
+	return (bestScore, bestMoves)
 
 def mmx_move(board, mini, prev_move, cur_player):
-	return mmx_ab(board, mini, prev_move, cur_player)[-1]
+	# mmx_ab returns a tuple; we extract the move sequence.
+	score, moves = mmx_ab(board, mini, prev_move, cur_player)
+	# If moves is not empty, return the first move in the sequence (the last appended move).
+	# (The moves are stored in reverse order.)
+	if moves:
+		return moves[-1] # moves[0]?
+	else:
+		# In a terminal position, there may be no move.
+		# return None # Somehow, this is broken... I guess it's possible to reach immediate terminal states or smth
+		return random.choice(find_moves(board, mini, prev_move))
 
 def midgame_ab(board, mini, prev_move, cur_player, lowerBound = -9, upperBound = 9, depth=0):
 	# get minimax + alpha/beta pruning next move given a previous move and the board and mini states
 	# cur_player = 1 if x and 2 if o
-	# return [score, ... moves in row-col format in reverse order]
+	# Return tuple (score, moves) rather than a flat list.
+	# moves is a list of moves in forward order (first move is the move to play now).
 	myOptions = find_moves(board, mini, prev_move)
 	next_player = 3 - cur_player
 
 	if depth == N_AB_MIDGAME:
 		score = board_evaluation(board, mini, prev_move, cur_player, myOptions)
-		return [score]
+		return (score, [])
 	
 	game_over = check_won(mini)
 	if game_over: # i.e. game_over != 0
 		if game_over != cur_player:
-			return [-10] # we lost
+			return (-10, []) # we lost
 		elif game_over == 3:
-			return [-5] # we drew
+			return (-5, []) # we drew
 		else:
-			return [10] # we won
+			return (10, []) # we won
 	
+	# If there is only one legal move, just follow it.
 	if len(myOptions) == 1:
-		mv = [*myOptions][0] # idk why not just myOptions[0]
+		mv = list(myOptions)[0]  # Modification: converting to list for clarity.
 		new_board = make_board_move(board, mv, cur_player)
 		new_mini = make_mini_move(mini, new_board)
-		ab = midgame_ab(new_board, new_mini, mv, next_player, -upperBound, -lowerBound, depth+1)
-		return [-ab[0]] + ab[1:] + [mv]
+		child_score, child_moves = midgame_ab(new_board, new_mini, mv, next_player, -upperBound, -lowerBound, depth + 1)
+		score = -child_score  # Negamax inversion.
+		return (score, child_moves + [mv])
 	
-	bestSoFar = [lowerBound - 1]
+	# Initialize best score and move sequence.
+	bestSoFar = (lowerBound - 1, [])
+
 	for mv in myOptions:
 		new_board = make_board_move(board, mv, cur_player)
 		new_mini = make_mini_move(mini, new_board)
-		ab = midgame_ab(new_board, new_mini, mv, next_player, -upperBound, -lowerBound, depth+1)
-		score = -ab[0]
-		if score < lowerBound: continue # not good enough
-		if score > upperBound: return [score] # win, I think? # + ab[1:] + [mv]??
-		if score > bestSoFar[0]:
-			bestSoFar = [score] + ab[1:] + [mv] # compile moves in reverse order, 0th element is min score
-		lowerBound = score + 1 # max(lowerBound, score + 1) # should be equivalent
+		child_score, child_moves = midgame_ab(new_board, new_mini, mv, next_player, -upperBound, -lowerBound, depth + 1)
+		score = -child_score  # Negamax inversion
 
-	if len(bestSoFar) == 1 and depth == 0: # every move loses
-		print("this happened")
-		return bestSoFar + [random.choice(myOptions)]
+		if score < lowerBound: continue # not good enough
+		if score > upperBound: return (score, child_moves + [mv]) # + ab[1:] + [mv]??
+		if score > bestSoFar[0]:
+			bestSoFar = (score, child_moves + [mv]) # compile moves in reverse order, 0th element is min score
+		lowerBound = max(lowerBound, score)
+
+	# If no branch produced a move sequence at the root, choose a random legal move.
+	if bestSoFar[1] == [] and depth == 0:  # every move loses, so fallback
+		# print("this happened") # NOTE: this does actually happen sometimes
+		return (bestSoFar[0], [random.choice(list(myOptions))])
+
 	return bestSoFar
 
 def one_player_loop(player_turn):
@@ -387,22 +409,48 @@ def one_player_loop(player_turn):
 		else: # ai's turn
 			if AI_TYPE == 0: # random
 				cur_move = random_move(board, mini, prev_move, turn + 1) # ai_player is 2 if player_turn is 1 and vice versa
+
 			elif AI_TYPE == 1: # alpha-beta
-				if (mini.count(0) < N_AB_SQUARES or max_moves_left(board, mini) < N_AB): # only use negamax when close to end of game
-					negamax = mmx_ab(board, mini, prev_move, turn + 1)
-					print(f"negamax with score of {negamax[0]}")
-					cur_move = negamax[-1]
+				use_negamax = (mini.count(0) < N_AB_SQUARES or max_moves_left(board, mini) < N_AB) # only use negamax when close to end of game
+
+				if use_negamax:
+					#-- print("negamax move, looked to end of game")
+					negamax = mmx_move(board, mini, prev_move, turn + 1)
+					if not negamax:
+						print(f"Error - endgame: no moves for player {turn} of type negamax in position with prev move {prev_move}")
+						disp(board)
+						disp_mini(mini)
+						exit()
+					cur_move = negamax
 				else:
-					ab = midgame_ab(board, mini, prev_move, turn + 1)
-					if ab[0] != 0 and -0.2 <= ab[0]: # if it can actually see anything, it probably sees a decent move
-						print(f"midgame a/b with score {ab[0]}")
-						cur_move = ab[-1]
+					score, moves = midgame_ab(board, mini, prev_move, turn + 1)
+					if score != 0 and -0.2 <= score: # if it can actually see anything, it probably sees a decent move
+						#-- print(f"midgame a/b with score {score:.2f}")
+						if moves:
+							cur_move = moves[-1]
+						else:
+							print(f"Error - midgame: no moves for player {turn} of type minimax in position with prev move {prev_move}")
+							disp(board)
+							disp_mini(mini)
+							exit()
+						if type(cur_move) != tuple:
+							print(f"Error - {cur_move} is not a tuple, using {'nega' if use_negamax else 'mini'}max")
+							disp(board)
+							disp_mini(mini)
+							exit()
 					else:
-						print(f"midgame a/b not good enough: {ab[0]} so good move")
+						#-- print(f"midgame a/b not good enough: {ab[0]} so good move")
 						cur_move = good_move(board, mini, prev_move, turn + 1, find_moves(board, mini, prev_move))
-					# random_move(board, mini, prev_move, turn + 1)
+
+				if not valid_move(cur_move, board, mini, prev_move):
+					print(f"Player {turn}, of AI type {AI_TYPE}, using {'nega' if use_negamax else 'mini'}max, played invalid move {cur_move} on board:")
+					disp(board)
+					game_over = 2 - turn # current player loses
+					continue
+
 			else: # == 2: RL
 				cur_move = random_move(board, mini, prev_move, turn + 1) # TODO
+
 			print(f"AI's move: ({(cur_move[0] // 3) * 3 + (cur_move[1] // 3) + 1}, {(cur_move[0] % 3) * 3 + (cur_move[1] % 3) + 1})")
 		
 		# update board with move
@@ -513,24 +561,38 @@ def two_ai_loop(ai1_type, ai2_type):
 			# get next move
 			if ai_types[turn] == "random": # random
 				cur_move = random_move(board, mini, prev_move, turn + 1) # ai_player is 2 if player_turn is 1 and vice versa
+
 			elif ai_types[turn] == "minimax": # alpha-beta
 				use_negamax = (mini.count(0) < N_AB_SQUARES or max_moves_left(board, mini) < N_AB)
 				if use_negamax: # only use negamax when close to end of game
-					negamax = mmx_ab(board, mini, prev_move, turn + 1)
+					negamax = mmx_move(board, mini, prev_move, turn + 1)
 					#-- print(f"negamax with score of {negamax[0]}")
+					if not negamax:
+						print(f"Endgame: no moves for player {turn} of type {ai_types[turn]} in position with prev move {prev_move}")
+						disp(board)
+						disp_mini(mini)
+						exit()
 					cur_move = negamax
 				else:
-					ab = midgame_ab(board, mini, prev_move, turn + 1)
-					if ab[0] != 0 and -0.2 <= ab[0]: # if it can actually see anything, it probably sees a decent move
+					score, moves = midgame_ab(board, mini, prev_move, turn + 1)
+					if score != 0 and -0.2 <= score: # if it can actually see anything, it probably sees a decent move
 						#-- print(f"midgame a/b with score {ab[0]}")
-						cur_move = ab[-1]
-						if type(cur_move) == int:
-							print(f"from here {cur_move}")
+						if moves:
+							cur_move = moves[-1]
+						else:
+							print(f"Midgame: no moves for player {turn} of type {ai_types[turn]} in position with prev move {prev_move}")
+							disp(board)
+							disp_mini(mini)
+							exit()
+						if type(cur_move) != tuple:
+							print(f"from here {cur_move} using {'nega' if use_negamax else 'mini'}max")
+							disp(board)
+							disp_mini(mini)
 							exit()
 					else:
 						#-- print(f"midgame a/b not good enough: {ab[0]} so good move")
 						cur_move = good_move(board, mini, prev_move, turn + 1, find_moves(board, mini, prev_move))
-					# random_move(board, mini, prev_move, turn + 1)
+
 			else: # == 2: RL
 				cur_move = random_move(board, mini, prev_move, turn + 1) # TODO
 
@@ -566,7 +628,7 @@ def two_ai_loop(ai1_type, ai2_type):
 		
 		# end the game
 		wins[game_over - 1] += 1
-		print("*", end="", flush=True)
+		print(game_over, end="", flush=True)
 	print()
 	
 	# display results
@@ -604,3 +666,18 @@ if __name__=='__main__':
 # useful testing code:
 # board = [['x', ' ', ' '] + [' ']*6, [' ', 'x', ' '] + [' ']*6, [' ', ' ', 'x'] + [' ']*6] + [[' ']*9 for i in range(6)]
 # print('\n'.join(str(board[i]) for i in range(9))
+
+# test:
+"""
+find_moves([ \
+	['x', 'x', 'o', 'o', ' ', 'o', 'x', 'x', 'x'],
+	['o', 'o', ' ', ' ', 'o', ' ', 'o', 'o', 'x'], 
+	['o', ' ', 'x', 'o', ' ', ' ', 'x', 'x', 'o'], 
+	['x', ' ', 'x', 'x', 'x', 'x', 'o', 'x', 'o'], 
+	['x', 'o', 'o', ' ', ' ', 'o', 'o', 'x', 'o'], 
+	[' ', 'x', ' ', ' ', 'x', ' ', 'x', 'o', 'x'], 
+	['x', ' ', 'o', 'o', 'x', 'o', 'o', 'x', 'o'], 
+	[' ', 'o', 'x', 'x', 'x', 'o', 'o', ' ', 'x'], 
+	['o', ' ', 'x', ' ', 'o', 'x', 'x', 'o', ' ']], 
+	[2, 2, 1, 0, 1, 3, 2, 0, 0], (6, 7))"
+"""
