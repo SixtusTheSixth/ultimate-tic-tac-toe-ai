@@ -1,12 +1,13 @@
 # one-player and two-player tic-tac-toe
+# NOTE: This code is the final version before the project was split into multiple files. It allows for a user player, a random player,
+# and an AI player that uses a combination of minimax and a basic strategy (which should usually be worse than plain minimax).
+# That means this file can be run by itself, as python `ultimate.py`. To run the new version, use `python game.py`.
 
 # representing state of board as two boards: one big 9x9 board for all the x's and o's (' ' for empty), and 'mini' for the 3x3 large board, who's won what (0, 1 = 'x', 2 = 'o', 3 = 'c').
 # board is a 2d 9x9 array, mini is a 1d 1x9 array
 
-# TODO: fix calls to midgame and endgame minimax in one player loop
 # TODO: DO CACHING it'll help so much bc when squares are filled it won't have to check the position twice
-# TODO: add midgame alpha-beta and a position heuristic (e.g. how many squares you've won minus how many squares the opponent has won, and how many you're about to win, not directing to a full sq, etc)
-# TODO: check Othello later steps to see if can include caching w globals, symmetry, etc.
+# TODO: improve midgame minimax heuristic
 # TODO: add RL AI
 
 import re

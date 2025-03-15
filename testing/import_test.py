@@ -1,0 +1,1 @@
+global XYZ; XYZ = 3
