@@ -3,6 +3,7 @@
 # representing state of board as two boards: one big 9x9 board for all the x's and o's (' ' for empty), and 'mini' for the 3x3 large board, who's won what (0, 1 = 'x', 2 = 'o', 3 = 'c').
 # board is a 2d 9x9 array, mini is a 1d 1x9 array
 
+# TODO: fix a/b pruning line 344... issues also being caused because we can reach a game-end state halfway through midgame minimax. need to deal with this
 # TODO: DO CACHING it'll help so much bc when squares are filled it won't have to check the position twice
 # TODO: add midgame alpha-beta and a position heuristic (e.g. how many squares you've won minus how many squares the opponent has won, and how many you're about to win, not directing to a full sq, etc)
 # TODO: check Othello later steps to see if can include caching w globals, symmetry, etc.
@@ -12,9 +13,9 @@ import re
 import random
 
 global PLAYERS; PLAYERS = ('x', 'o')
-global N_AB; N_AB = 6
-global N_AB_SQAURES; N_AB_SQUARES = 4 # after how many are left should we think to the end
-global N_AB_MIDGAME; N_AB_MIDGAME = 4
+global N_AB; N_AB = 6 # how many individual moves left available for us to think to the end
+global N_AB_SQAURES; N_AB_SQUARES = 4 # how many big squares left unfinished for us to think to the end
+global N_AB_MIDGAME; N_AB_MIDGAME = 3 # how many moves ahead to count for midgame minimax
 global AI_TYPE; AI_TYPE = 1 # 0 for random, 1 for minimax, 2 for RL
 
 def get_input(prompt, options):
@@ -75,7 +76,7 @@ def valid_move(move, board, mini, prev_move):
 	return True
 
 def update_mini(mini, board):
-	# update big board given new board state
+	# update overall board (`mini`) given new board state
 	# no need to return anything, just modifying mini in place
 	for bigsq, mini_val in enumerate(mini):
 		if mini_val != 0: continue # that big square is already done
@@ -190,34 +191,70 @@ def about_to_win(board_exc, cur_player):
 	# given a 3x3 sub-array representing the board squares (so 'x', 'o', and ' ' as values) we're checking
 	us = 'xo'[cur_player - 1]
 	bf = ''.join(''.join(r) for r in board_exc) # bf for board_flat, flattened string version of board_exc
-	if bf[0:2] == us * 2 and bf[2] == ' ' or bf[0] + bf []
+
+	def row_almost(s): 
+		# does the current player have 2 spots in the 3-character string representation of a given row and is the last spot available
+		return s.count(us) == 2 and s.count(' ') == 1
+
+	return row_almost(bf[0:3]) or row_almost(bf[3:6]) or row_almost(bf[6:9]) or \
+		row_almost(bf[0:7:3]) or row_almost(bf[1:8:3]) or row_almost(bf[2:9:3]) or \
+		row_almost(bf[0:9:4]) or row_almost(bf[2:7:2])
 
 def good_move(board, mini, prev_move, ai_player, options):
 	# return a good move (single row-col tuple) given options
 	# ai_player is 1 if x, 2 if o, options is a list of row-col tuples
 
-	full_options = [(mv, newb := make_board_move(board, mv, ai_player), make_mini_move(mini, newb)) for mv in options]
-	for op in full_options:
-		if check_won(op[2]) == ai_player: # we won the game
-			return op[0]
-	mv_sqs = ((op[0][0] // 3) * 3 + op[0][1] // 3, (op[0][0] % 3) * 3 + op[0][1] % 3)
-	for op in full_options:
-		# block them from directly winning
-		# if they are about to win the square they're directed to and that would win them the game, don't play here
+	ops = [(mv, newb := make_board_move(board, mv, ai_player), make_mini_move(mini, newb)) for mv in options] # [((move row, move col), new board, new mini), ...]
+	# big square, small square corresponding to each option (each 0-8)
+	op_bigsq = [(op[0][0] // 3) * 3 + op[0][1] // 3 for op in ops]
+	op_smallsq = [(op[0][0] % 3) * 3 + op[0][1] % 3 for op in ops]
+	unsafe_ops = [] # don't play these if we can avoid them
 
-	for op in full_options:
-		if mini[mv_sqs[0]] == ai_player: # we've won the square
-			return op[0]
-	# TODO: block people in this square
-	for op in full_options:
-		if mini[mv_sqs[1]] == 0: # we're not directing to a full square # TODO: this is not working
-			return op[0]
-	""" # TODO
-	for op in full_options:
-		# if can not direct to a square they're about to win, do that
-		midsq = mv_sqs[1] + 
-	"""
-	return random.choice(full_options)[0]
+	# Win the game
+	for i in range(len(ops)):
+		if check_won(ops[i][2]) == ai_player: # we won the game
+			return ops[i][0]
+
+	# Block them from winning the game
+	safe_ops = []
+	for i in range(len(ops)):
+		# if they are about to win the square they're directed to and that would win them the game, don't play here
+		if about_to_win(board[op_smallsq[i] // 3 : op_smallsq[i] // 3 + 3][op_smallsq[i] % 3 : op_smallsq[i] % 3 + 3], 3 - ai_player):
+			# if they're about to win the square (^), check if that move would also make them win the game
+			new_mini = ops[i][2][:]
+			new_mini[op_smallsq[i]] = 3 - ai_player
+			if check_won(new_mini) == 3 - ai_player:
+				unsafe_ops.append(ops[i])
+				continue
+		safe_ops.append(ops[i])
+	ops = safe_ops
+	
+	# Win the square
+	for i in range(len(ops)):
+		if mini[op_bigsq[i]] == ai_player: # we've won the square
+			return ops[i][0] # TODO: test - i think it's working but mb not
+	
+	# Don't direct to a full square
+	safe_ops = []
+	for i in range(len(ops)):
+		if mini[op_smallsq[i]] == 0: # we're not directing to a full square
+			safe_ops.append(ops[i])
+		else: unsafe_ops.append(ops[i])
+	ops = safe_ops
+	
+	# TODO: Block them in this square
+
+	# Don't direct to a square they're about to win
+	safe_ops = []
+	for i in range(len(ops)):
+		# if they are about to win the square they're directed to and that would win them the game, don't play here
+		if not about_to_win(board[op_smallsq[i] // 3 : op_smallsq[i] // 3 + 3][op_smallsq[i] % 3 : op_smallsq[i] % 3 + 3], 3 - ai_player):
+			safe_ops.append(ops[i])
+		else: unsafe_ops.append(ops[i])
+	ops = safe_ops
+
+	if ops != []: return random.choice(ops)[0]
+	return random.choice(unsafe_ops)[0]
 
 def board_evaluation(board, mini, prev_move, ai_player, options):
 	# given board and mini states, ai_player (1 if x, 2 if o), and options as list of row-col tuples, 
@@ -229,7 +266,7 @@ def board_evaluation(board, mini, prev_move, ai_player, options):
 	return heuristic / 45 # scale to +/- 9
 
 def mmx_ab(board, mini, prev_move, cur_player, lowerBound = -9, upperBound = 9):
-	# get minimax + alpha/beta pruning next move given a previous move and the board and mini states
+	# get negamax + alpha/beta pruning next move given a previous move and the board and mini states
 	# cur_player = 1 if x and 2 if o
 	# return [score, ... moves in row-col format in reverse order]
 	next_player = 3 - cur_player
@@ -246,7 +283,12 @@ def mmx_ab(board, mini, prev_move, cur_player, lowerBound = -9, upperBound = 9):
 			return [10] # we won
 	
 	# negamax recursion
-	bestSoFar = [lowerBound - 1]
+	bestSoFar = [lowerBound - 2]
+	if not myOptions:
+		disp(board)
+		disp_mini(mini)
+		print(f"no options for player {'xo'[cur_player - 1]} in above position")
+		exit()
 	for mv in myOptions:
 		new_board = make_board_move(board, mv, cur_player)
 		new_mini = make_mini_move(mini, new_board)
@@ -254,7 +296,7 @@ def mmx_ab(board, mini, prev_move, cur_player, lowerBound = -9, upperBound = 9):
 		score = -ab[0]
 
 		if score < lowerBound: continue
-		if score > upperBound: return [score]
+		if score > upperBound: return [score] + ab[1:] + [mv] # maybe??
 		if score > bestSoFar[0]:
 			bestSoFar = [score] + ab[1:] + [mv] # compile moves in reverse order, 0th element is min score
 
@@ -304,11 +346,14 @@ def midgame_ab(board, mini, prev_move, cur_player, lowerBound = -9, upperBound =
 		ab = midgame_ab(new_board, new_mini, mv, next_player, -upperBound, -lowerBound, depth+1)
 		score = -ab[0]
 		if score < lowerBound: continue # not good enough
-		if score > upperBound: return [score] # too good, caller will not choose
+		if score > upperBound: return [score] # win, I think? # + ab[1:] + [mv]??
 		if score > bestSoFar[0]:
 			bestSoFar = [score] + ab[1:] + [mv] # compile moves in reverse order, 0th element is min score
 		lowerBound = score + 1 # max(lowerBound, score + 1) # should be equivalent
 
+	if len(bestSoFar) == 1 and depth == 0: # every move loses
+		print("this happened")
+		return bestSoFar + [random.choice(myOptions)]
 	return bestSoFar
 
 def one_player_loop(player_turn):
@@ -345,15 +390,11 @@ def one_player_loop(player_turn):
 			elif AI_TYPE == 1: # alpha-beta
 				if (mini.count(0) < N_AB_SQUARES or max_moves_left(board, mini) < N_AB): # only use negamax when close to end of game
 					negamax = mmx_ab(board, mini, prev_move, turn + 1)
-					if -0.5 <= negamax[0] <= 10:
-						print(f"negamax with score of {negamax[0]}")
-						cur_move = negamax[-1]
-					else:
-						print(f"negamax not good enough: {negamax[0]} so good move")
-						cur_move = good_move(board, mini, prev_move, turn + 1, find_moves(board, mini, prev_move))
+					print(f"negamax with score of {negamax[0]}")
+					cur_move = negamax[-1]
 				else:
 					ab = midgame_ab(board, mini, prev_move, turn + 1)
-					if -0.5 <=ab[0]<= 10:
+					if ab[0] != 0 and -0.2 <= ab[0]: # if it can actually see anything, it probably sees a decent move
 						print(f"midgame a/b with score {ab[0]}")
 						cur_move = ab[-1]
 					else:
@@ -447,6 +488,90 @@ def two_player_loop():
 	else:
 		print("Game over, it was a draw!")
 
+def two_ai_loop(ai1_type, ai2_type):
+	if ai1_type.lower() not in ("random", "minimax", "rl") or ai2_type.lower() not in ("random", "minimax", "rl"):
+		print("Please make sure AI types are valid.")
+		exit()
+	
+	num_games = 100
+	ai_types = (ai1_type, ai2_type) # x and o type respectively
+	wins = [0, 0, 0] # x wins, o wins, draws
+	
+	for _ in range(num_games):
+		# set up variables
+		board = [[' '] * 9 for i in range(9)]
+		mini = [0] * 9
+		game_over = 0
+		turn = 0
+		prev_move = (-1, -1)
+
+		# game loop
+		while not game_over:
+			# testing
+			use_negamax = False # increase scope
+
+			# get next move
+			if ai_types[turn] == "random": # random
+				cur_move = random_move(board, mini, prev_move, turn + 1) # ai_player is 2 if player_turn is 1 and vice versa
+			elif ai_types[turn] == "minimax": # alpha-beta
+				use_negamax = (mini.count(0) < N_AB_SQUARES or max_moves_left(board, mini) < N_AB)
+				if use_negamax: # only use negamax when close to end of game
+					negamax = mmx_ab(board, mini, prev_move, turn + 1)
+					#-- print(f"negamax with score of {negamax[0]}")
+					cur_move = negamax
+				else:
+					ab = midgame_ab(board, mini, prev_move, turn + 1)
+					if ab[0] != 0 and -0.2 <= ab[0]: # if it can actually see anything, it probably sees a decent move
+						#-- print(f"midgame a/b with score {ab[0]}")
+						cur_move = ab[-1]
+						if type(cur_move) == int:
+							print(f"from here {cur_move}")
+							exit()
+					else:
+						#-- print(f"midgame a/b not good enough: {ab[0]} so good move")
+						cur_move = good_move(board, mini, prev_move, turn + 1, find_moves(board, mini, prev_move))
+					# random_move(board, mini, prev_move, turn + 1)
+			else: # == 2: RL
+				cur_move = random_move(board, mini, prev_move, turn + 1) # TODO
+
+			# check that the move is valid, if not - NOTE - automatic loss
+			try:
+				if not valid_move(cur_move, board, mini, prev_move):
+					print(f"Player {turn}, of AI type {ai_types[turn]}, using {'nega' if use_negamax else 'mini'}max, played invalid move {cur_move} on board:")
+					disp(board)
+					game_over = 2 - turn # current player loses
+					continue
+			except:
+				print(ai_types[turn], cur_move) # testing
+
+			#-- print(f"AI's move: ({(cur_move[0] // 3) * 3 + (cur_move[1] // 3) + 1}, {(cur_move[0] % 3) * 3 + (cur_move[1] % 3) + 1})")
+			
+			# update board with move
+			board[cur_move[0]][cur_move[1]] = PLAYERS[turn]
+			
+			# update mini based on board changes
+			update_mini(mini, board) # no reassignment bc modifying list
+
+			# display board
+			#-- disp(board)
+			#-- disp_mini(mini)
+
+			# check if anyone has won
+			game_over = check_won(mini) 
+			# = 0 if not yet, 1 if player 1 (x), 2 if player 2 (o), 3 if draw
+
+			# change turns
+			prev_move = cur_move
+			turn = 1 - turn
+		
+		# end the game
+		wins[game_over - 1] += 1
+		print("*", end="", flush=True)
+	print()
+	
+	# display results
+	print(f"Out of {num_games} games-- X wins ({ai1_type}): {wins[0]}, O wins ({ai2_type}): {wins[1]}, draws: {wins[2]}")
+
 def main():
 	# intro + rules out of the way
 	print("Welcome to ultimate tic-tac-toe!")
@@ -460,15 +585,18 @@ def main():
 	_ = get_input("Type 'y' when you understand: ", ('y', 'yes'))
 
 	# get number of players
-	num_players = int(get_input("How many players are playing, 1 or 2? ", ('1', '2')))
+	num_players = int(get_input("How many players are playing, 0, 1 or 2? ", ('0', '1', '2')))
 	
-	# if one-player, play one-player tic-tac-toe
 	if num_players == 1:
+		# if one-player, play one-player tic-tac-toe
 		player_turn = int(get_input("Would you like to be player 1 or 2 (type 1 or 2)? ", ('1', '2')))
 		one_player_loop(player_turn)
-	else:
+	elif num_players == 2:
 		# if two-player, play two-player tic-tac-toe
 		two_player_loop()
+	else:
+		# if zero players, run an experiment of some AIs against each other
+		two_ai_loop("random", "minimax") # can be "random", "minimax", "RL"
 
 if __name__=='__main__':
 	main()
